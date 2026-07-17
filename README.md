@@ -79,7 +79,7 @@ pénible est `auto`.
   commencer, on émet UNE tâche dont le livrable est le plan de découpage —
   jamais cinquante tâches devinées.
 
-## Exemple complet (session réelle : Phase 4 du reshape Cookpit)
+## Exemple complet (déroulé illustratif, issu d'un test du skill)
 
 ```bash
 # 0. Préparation — worktree dédié, jamais main
