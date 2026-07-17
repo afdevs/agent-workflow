@@ -1,0 +1,163 @@
+#!/usr/bin/env bash
+# agent — front-end unique du workflow. 4 commandes, rien d'autre à retenir.
+#
+#   agent run          lance la boucle (Ctrl-C pour arrêter)
+#   agent status       où j'en suis, et quoi faire maintenant
+#   agent logs         voir l'agent travailler en direct
+#   agent retry <id>   relancer une tâche en échec (après l'avoir corrigée)
+#   agent finish       vérifier + merger quand tout est fini
+
+set -uo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+STATE="${STATE_DIR:-.autorun}"
+QDIR="${QUEUE_DIR:-queue}"
+
+c_ok=$'\033[32m'; c_warn=$'\033[33m'; c_err=$'\033[31m'; c_dim=$'\033[2m'; c_b=$'\033[1m'; c_0=$'\033[0m'
+
+fm() { sed -n '2,/^---$/p' "$1" 2>/dev/null | grep -m1 "^$2:" | sed "s/^$2: *//; s/ *\$//"; }
+task_file() { local f; for f in $(queue_files); do [[ "$(fm "$f" id)" == "$1" ]] && { echo "$f"; return; }; done; }
+status_of() { [[ -f "$STATE/state/$1" ]] && cat "$STATE/state/$1" || echo pending; }
+
+queue_files() { # tous les .md de tâches, à plat ou en sous-dossiers de vagues
+  local f
+  for f in "$QDIR"/[0-9]*.md "$QDIR"/*/[0-9]*.md; do [[ -e "$f" ]] && echo "$f"; done
+}
+need_queue() {
+  [[ -n "$(queue_files)" ]] && return 0
+  echo "${c_err}Aucune queue trouvée dans $QDIR/${c_0}"
+  echo "→ Lance d'abord le triage :  ${c_b}claude${c_0}  puis demande le tri de ton document avec doc-triage"
+  exit 1
+}
+
+cmd_run() {
+  need_queue
+  echo "${c_dim}Ctrl-C pour arrêter. Suivre ailleurs :  agent status  /  agent logs${c_0}"
+  exec "$HERE/autorun-queue.sh"
+}
+
+cmd_logs() {
+  [[ -f "$STATE/last.json" ]] || { echo "Rien à afficher pour l'instant — aucune tâche n'a démarré."; exit 0; }
+  echo "${c_dim}L'agent au travail (Ctrl-C pour sortir, ça n'arrête pas le run) :${c_0}"
+  if command -v jq >/dev/null; then
+    tail -f "$STATE/last.json" | jq -r --unbuffered '
+      select(.type=="assistant") | .message.content[]? |
+      if .type=="tool_use" then "→ \(.name)  \(.input|tostring|.[0:100])"
+      elif .type=="text" then "💬 \(.text|.[0:150])" else empty end' 2>/dev/null
+  else
+    echo "${c_dim}(jq absent : affichage brut — brew install jq pour du lisible)${c_0}"
+    tail -f "$STATE/last.json"
+  fi
+}
+
+cmd_retry() {
+  local id="${1:-}"
+  [[ -z "$id" ]] && { echo "usage: agent retry <id>   (ex: agent retry p4-22)"; exit 1; }
+  local f; f="$(task_file "$id")"
+  [[ -z "$f" ]] && { echo "${c_err}Tâche $id introuvable dans $QDIR/${c_0}"; exit 1; }
+  rm -f "$STATE/state/$id"
+  echo "${c_ok}$id remise en attente.${c_0}"
+  echo "Le travail raté est sur la branche ${c_b}parked/$id${c_0} si tu veux le voir."
+  echo "→ Relance :  ${c_b}agent run${c_0}"
+}
+
+cmd_status() {
+  need_queue
+  local total=0 done=0 parked=0 human=0 running="" pending=0
+  local f id st risk
+  for f in $(queue_files); do
+    id="$(fm "$f" id)"; [[ -z "$id" ]] && continue
+    risk="$(fm "$f" risk)"; st="$(status_of "$id")"
+    (( total++ ))
+    case "$st" in
+      done) (( done++ )) ;;
+      blocked) (( parked++ )) ;;
+      needs-human) (( human++ )) ;;
+      running) running="$id — $(fm "$f" title)" ;;
+      *) [[ "$risk" == "auto" ]] && (( pending++ )) || (( human++ )) ;;
+    esac
+  done
+
+  echo
+  echo "${c_b}QUEUE${c_0}   ${c_ok}$done faites${c_0} · ${c_err}$parked en échec${c_0} · ${c_warn}$human pour toi${c_0} · $pending restantes   ${c_dim}($total au total)${c_0}"
+  [[ -f "$STATE/cost_usd" ]] && echo "${c_b}COÛT${c_0}    \$$(cat "$STATE/cost_usd")"
+
+  if pgrep -f "autorun-queue.sh" >/dev/null 2>&1; then
+    echo "${c_b}EN COURS${c_0} ${c_ok}●${c_0} ${running:-démarrage...}"
+    local last; last="$(tail -n1 "$STATE/queue.log" 2>/dev/null | sed 's/^\[[^]]*\] //')"
+    [[ -n "$last" ]] && echo "        ${c_dim}$last${c_0}"
+  else
+    echo "${c_b}EN COURS${c_0} ${c_dim}○ arrêté${c_0}"
+  fi
+
+  echo
+  echo "${c_b}À FAIRE MAINTENANT${c_0}"
+  local acted=0
+  if (( parked > 0 )); then
+    echo "  ${c_err}⏸${c_0}  $parked tâche(s) en échec :"
+    local sf pid
+    for sf in "$STATE"/state/*; do
+      [[ -e "$sf" ]] || continue
+      [[ "$(cat "$sf")" == "blocked" ]] || continue
+      pid="$(basename "$sf")"
+      echo "      ${c_b}$pid${c_0} — $(grep -A1 "^## $pid" HUMAN-INBOX.md 2>/dev/null | grep -m1 'Reason:' | sed 's/.*Reason:\*\* *//')"
+      echo "      ${c_dim}corrige la tâche puis :  agent retry $pid${c_0}"
+    done
+    acted=1
+  fi
+  if (( human > 0 )); then
+    echo "  ${c_warn}👤${c_0} $human tâche(s) te sont réservées (deploys, décisions) → ${c_b}HUMAN-INBOX.md${c_0}"
+    acted=1
+  fi
+  if (( pending == 0 && parked == 0 )); then
+    echo "  ${c_ok}✔${c_0}  Tout l'automatisable est fait → ${c_b}agent finish${c_0}"
+    acted=1
+  elif (( pending > 0 )) && ! pgrep -f "autorun-queue.sh" >/dev/null 2>&1; then
+    echo "  ${c_ok}▶${c_0}  $pending tâche(s) prêtes → ${c_b}agent run${c_0}"
+    acted=1
+  fi
+  (( acted )) || echo "  ${c_dim}rien à faire, laisse tourner (agent logs pour regarder)${c_0}"
+  echo
+}
+
+cmd_finish() {
+  echo "${c_b}Vérification avant merge${c_0}"
+  echo
+  local branch; branch="$(git rev-parse --abbrev-ref HEAD)"
+  echo "Branche : ${c_b}$branch${c_0}"
+  echo "Commits : $(git rev-list --count main.."$branch" 2>/dev/null || echo '?')"
+  git diff --stat main..."$branch" 2>/dev/null | tail -1
+  echo
+
+  local fails=0
+  for cmd in "npm test" "npm run build"; do
+    printf '  %-16s' "$cmd"
+    if $cmd >/dev/null 2>&1; then echo "${c_ok}OK${c_0}"; else echo "${c_err}ÉCHEC${c_0}"; fails=1; fi
+  done
+  echo
+
+  local human_left=0
+  [[ -f HUMAN-INBOX.md ]] && human_left=$(grep -c '^## ' HUMAN-INBOX.md 2>/dev/null || echo 0)
+  (( human_left > 0 )) && echo "  ${c_warn}⚠  $human_left entrée(s) dans HUMAN-INBOX.md — deploys/décisions à faire avant ou après le merge${c_0}"
+
+  if (( fails )); then
+    echo "  ${c_err}✘ Ne pas merger : corrige les échecs ci-dessus d'abord.${c_0}"; exit 1
+  fi
+
+  echo "${c_b}Relis avant de merger${c_0}"
+  echo "  git log --oneline main..$branch"
+  echo "  git diff main...$branch"
+  echo
+  echo "${c_b}Puis :${c_0}"
+  echo "  git checkout main && git merge $branch"
+  echo "  ${c_dim}# nettoyage${c_0}"
+  echo "  git worktree remove \"\$PWD\" 2>/dev/null; git branch -D \$(git branch --list 'parked/*' | tr -d ' ') 2>/dev/null"
+}
+
+case "${1:-status}" in
+  run) shift; cmd_run "$@" ;;
+  status|"") cmd_status ;;
+  logs) cmd_logs ;;
+  retry) shift; cmd_retry "$@" ;;
+  finish) cmd_finish ;;
+  *) echo "agent run | status | logs | retry <id> | finish"; exit 1 ;;
+esac

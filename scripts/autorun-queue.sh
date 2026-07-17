@@ -8,6 +8,22 @@
 
 set -uo pipefail
 
+# ─── portability: Linux / macOS / Windows Git Bash ──────────────────────────
+# macOS: re-exec under caffeinate so the Mac never sleeps mid-run
+if [[ "$(uname)" == "Darwin" && -z "${_CAFFEINATED:-}" ]] && command -v caffeinate >/dev/null; then
+  export _CAFFEINATED=1
+  exec caffeinate -i "$0" "$@"
+fi
+# GNU date needed for reset-time parsing; macOS: brew install coreutils → gdate
+DATE_BIN="date"; command -v gdate >/dev/null 2>&1 && DATE_BIN="gdate"
+GNU_DATE=1; "$DATE_BIN" -u -d "today 12:00" +%s >/dev/null 2>&1 || GNU_DATE=0
+# timeout: coreutils (gtimeout on macOS via brew); degrade to no-timeout if absent
+TIMEOUT_BIN=""; for _t in timeout gtimeout; do command -v "$_t" >/dev/null 2>&1 && { TIMEOUT_BIN="$_t"; break; }; done
+run_to() { local d="$1"; shift; if [[ -n "$TIMEOUT_BIN" ]]; then "$TIMEOUT_BIN" "$d" "$@"; else "$@"; fi; }
+# jq: required for github/gitlab modes; optional in local mode (cost tracking only)
+HAS_JQ=1; command -v jq >/dev/null 2>&1 || HAS_JQ=0
+# ────────────────────────────────────────────────────────────────────────────
+
 QUEUE_MODE="${QUEUE_MODE:-local}"   # local | github | gitlab
 QUEUE_DIR="${QUEUE_DIR:-queue}"
 STATE_DIR="${STATE_DIR:-.autorun}"
@@ -38,7 +54,13 @@ mkdir -p "$STATE_DIR/state"
 log() { printf '[%s] %s\n' "$(date -u '+%m-%d %H:%M:%SZ')" "$*" | tee -a "$LOG"; }
 trap 'log "interrupted"; exit 130' INT TERM
 
-for b in claude jq timeout git; do command -v "$b" >/dev/null || { echo "missing: $b" >&2; exit 1; }; done
+for b in claude git; do command -v "$b" >/dev/null || { echo "missing: $b" >&2; exit 1; }; done
+[[ -z "$TIMEOUT_BIN" ]] && log "⚠ no timeout binary (macOS: brew install coreutils) — stuck agents won't be killed"
+(( GNU_DATE )) || log "⚠ no GNU date (macOS: brew install coreutils) — rate-limit sleeps use ${DEFAULT_BACKOFF}s backoff instead of exact reset time"
+if (( ! HAS_JQ )); then
+  [[ "$QUEUE_MODE" != "local" ]] && { echo "QUEUE_MODE=$QUEUE_MODE requires jq" >&2; exit 1; }
+  log "⚠ jq missing — cost tracking disabled (budget cap inactive)"
+fi
 fallback_local() { # fallback_local <reason>
   log "⚠ QUEUE_MODE=$QUEUE_MODE unavailable: $1"
   if [[ -d "$QUEUE_DIR" ]] && ls "$QUEUE_DIR"/[0-9]*.md >/dev/null 2>&1; then
@@ -175,20 +197,41 @@ seconds_until_reset() {
   stamp=$(grep -oiE 'resets[[:space:]]+[0-9]{1,2}:[0-9]{2}[[:space:]]*(am|pm)?' <<<"$1" \
           | head -n1 | grep -oiE '[0-9]{1,2}:[0-9]{2}[[:space:]]*(am|pm)?' | tr -d ' ')
   [[ -z "$stamp" ]] && return 1
-  target=$(date -u -d "today $stamp" +%s 2>/dev/null) || return 1
-  now=$(date -u +%s); (( target <= now )) && target=$(date -u -d "tomorrow $stamp" +%s)
+  (( GNU_DATE )) || return 1
+  target=$("$DATE_BIN" -u -d "today $stamp" +%s 2>/dev/null) || return 1
+  now=$("$DATE_BIN" -u +%s); (( target <= now )) && target=$("$DATE_BIN" -u -d "tomorrow $stamp" +%s)
   echo $(( target - now + RESET_BUFFER ))
 }
 sleep_until() {
   local s="$1" end
   (( s > MAX_BACKOFF )) && s=$MAX_BACKOFF
   end=$(( $(date +%s) + s ))
-  log "sleeping ${s}s → $(date -u -d "@$end" '+%H:%MZ') / $(date -d "@$end" '+%H:%M local')"
+  if (( GNU_DATE )); then
+    log "sleeping ${s}s → $("$DATE_BIN" -u -d "@$end" '+%H:%MZ') / $("$DATE_BIN" -d "@$end" '+%H:%M local')"
+  else
+    log "sleeping ${s}s"
+  fi
   while (( $(date +%s) < end )); do sleep 30; done
 }
 budget_left() { awk -v s="$(cat "$COST_FILE")" -v c="$BUDGET_TOTAL" 'BEGIN{exit !(s<c)}'; }
 record_cost() {
-  local c; c=$(jq -r '.total_cost_usd // .cost_usd // 0' "$OUT_JSON" 2>/dev/null)
+  local c
+  if (( HAS_JQ )); then
+    c=$(grep '"type":"result"' "$OUT_JSON" 2>/dev/null | tail -n1 | jq -r '.total_cost_usd // .cost_usd // 0' 2>/dev/null)
+  elif command -v python3 >/dev/null 2>&1; then
+    c=$(python3 - "$OUT_JSON" <<'PY' 2>/dev/null
+import json,sys
+c=0
+for line in open(sys.argv[1]):
+    try: d=json.loads(line)
+    except Exception: continue
+    if d.get("type")=="result": c=d.get("total_cost_usd") or d.get("cost_usd") or 0
+print(c)
+PY
+)
+  else
+    c=0
+  fi
   [[ "$c" == "null" || -z "$c" ]] && c=0
   awk -v a="$(cat "$COST_FILE")" -v b="$c" 'BEGIN{printf "%.4f", a+b}' > "$COST_FILE.tmp"
   mv "$COST_FILE.tmp" "$COST_FILE"
@@ -239,8 +282,8 @@ If you cannot proceed without a human decision, or the task requires anything on
 its NEVER list, write the blocker to PROGRESS.md and stop immediately. Do not
 improvise around a blocker."
 
-    timeout "$RUN_TIMEOUT" claude -p "$prompt" \
-      --model "$MODEL" --output-format json \
+    run_to "$RUN_TIMEOUT" claude -p "$prompt" \
+      --model "$MODEL" --output-format stream-json --verbose \
       --allowedTools "$ALLOWED_TOOLS" --disallowedTools "$DISALLOWED_TOOLS" \
       --max-turns "$MAX_TURNS" --max-budget-usd "$BUDGET_PER_RUN" \
       >"$OUT_JSON" 2>"$OUT_ERR"
@@ -266,7 +309,7 @@ improvise around a blocker."
     fi
 
     log "gate: $gate"
-    if timeout 15m bash -c "$gate" >>"$LOG" 2>&1; then
+    if run_to 15m bash -c "$gate" >>"$LOG" 2>&1; then
       set_status "$id" done
       report_done "$id" "Committed on $(git rev-parse --abbrev-ref HEAD) @ $(git rev-parse --short HEAD)."
       log "✔ $id passed gate"
