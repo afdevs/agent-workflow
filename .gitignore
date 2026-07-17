@@ -1,0 +1,2 @@
+# Packaged skill bundles (build artifacts — source lives in skills/*/)
+*.skill
