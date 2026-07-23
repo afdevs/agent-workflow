@@ -76,7 +76,7 @@ the question with a recommendation based on context (solo vs team, which
 remote the repo has, whether the tracker should stay clean), but the user
 decides:
 
-- **local**: `queue/NNN-slug.md` files in the repo (solo work, experiments,
+- **local**: `.agent/queue/NNN-slug.md` files in the repo (solo work, experiments,
   or keeping the team tracker unpolluted)
 - **github**: GitHub issues via `gh`, labeled by risk class (team visibility,
   review threads, assignment)
@@ -86,7 +86,7 @@ decides:
 Before promising an issue mode, verify the CLI is present and authenticated
 (`gh auth status` / `glab auth status`). If it isn't, offer two paths and let
 the user pick: pause while they authenticate, or **fall back to local mode
-now** — emit `queue/NNN-slug.md` files instead. The fallback loses nothing:
+now** — emit `.agent/queue/NNN-slug.md` files instead. The fallback loses nothing:
 deps resolve by task id, not issue number, so a local queue can be re-emitted
 as issues later without breaking the graph. Never emit half a queue into a
 broken mode, and never silently switch modes — say what happened and why.
@@ -97,7 +97,7 @@ anything that isn't `auto`, so a wrong risk class is the single most dangerous
 mistake this skill can make. When unsure, classify stricter: a wrong `owner`
 costs a human ten minutes; a wrong `auto` can cost a codebase.
 
-Always finish by writing `PLAN-SUMMARY.md`: the task table, dependency order,
+Always finish by writing `.agent/PLAN-SUMMARY.md`: the task table, dependency order,
 what was split and why, everything classified `owner` and why, every gate you
 could not find an honest version of, and every doc-vs-repo contradiction found
 in Phase 1. This is the document the human reviews before launching the loop —
@@ -108,7 +108,7 @@ optimize it for a fast, high-confidence review.
 **Ground every task in files you actually read.** A task naming an invented
 path or a fabricated npm script fails at runtime and wastes a session window.
 If the document references something that doesn't exist, record it in
-PLAN-SUMMARY.md; never invent it.
+.agent/PLAN-SUMMARY.md; never invent it.
 
 **No gate, no auto.** The gate must be a real command that already exists in
 the repo, and it must genuinely prove the work. Apply the "bad-faith test":
@@ -116,7 +116,7 @@ could an agent satisfy this gate while doing the task badly? (Classic trap:
 a build that ignores types passing a typing task.) If the metric starts dirty
 and can't reach zero yet, prescribe a ratchet — count may never rise — rather
 than pretending it can pass clean. If no honest gate exists, the task is
-`review` at best, and PLAN-SUMMARY.md says why.
+`review` at best, and .agent/PLAN-SUMMARY.md says why.
 
 **Size for one session.** One task ≈ one commit, ≤ ~30 agentic turns, a
 handful of files. When an item's true size is unknowable until work starts,

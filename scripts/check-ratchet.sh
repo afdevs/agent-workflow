@@ -9,7 +9,7 @@
 #         ./check-ratchet.sh --init   -> record the current count as baseline
 
 set -uo pipefail
-BASELINE_FILE="${BASELINE_FILE:-.autorun/tsc-baseline}"
+BASELINE_FILE="${BASELINE_FILE:-.agent/run/tsc-baseline}"
 
 count_errors() { npx tsc --noEmit 2>&1 | grep -cE "error TS[0-9]+" || true; }
 

@@ -25,9 +25,9 @@ HAS_JQ=1; command -v jq >/dev/null 2>&1 || HAS_JQ=0
 # ────────────────────────────────────────────────────────────────────────────
 
 QUEUE_MODE="${QUEUE_MODE:-local}"   # local | github | gitlab
-QUEUE_DIR="${QUEUE_DIR:-queue}"
-STATE_DIR="${STATE_DIR:-.autorun}"
-INBOX="${INBOX:-HUMAN-INBOX.md}"
+QUEUE_DIR="${QUEUE_DIR:-.agent/queue}"
+STATE_DIR="${STATE_DIR:-.agent/run}"
+INBOX="${INBOX:-.agent/HUMAN-INBOX.md}"
 
 MODEL="${MODEL:-sonnet}"
 MAX_TURNS="${MAX_TURNS:-40}"
@@ -194,9 +194,11 @@ is_rate_limited() {
 }
 seconds_until_reset() {
   local stamp target now
-  stamp=$(grep -oiE 'resets[[:space:]]+[0-9]{1,2}:[0-9]{2}[[:space:]]*(am|pm)?' <<<"$1" \
-          | head -n1 | grep -oiE '[0-9]{1,2}:[0-9]{2}[[:space:]]*(am|pm)?' | tr -d ' ')
+  stamp=$(grep -oiE 'resets?[[:space:]]+(at[[:space:]]+)?[0-9]{1,2}(:[0-9]{2})?[[:space:]]*(am|pm)?' <<<"$1" \
+          | head -n1 | grep -oiE '[0-9]{1,2}(:[0-9]{2})?[[:space:]]*(am|pm)?$' | tr -d ' ')
   [[ -z "$stamp" ]] && return 1
+  # "10am" / "14" → add minutes so date can parse it
+  [[ "$stamp" =~ : ]] || stamp="$(sed -E 's/^([0-9]{1,2})/\1:00/' <<<"$stamp")"
   (( GNU_DATE )) || return 1
   target=$("$DATE_BIN" -u -d "today $stamp" +%s 2>/dev/null) || return 1
   now=$("$DATE_BIN" -u +%s); (( target <= now )) && target=$("$DATE_BIN" -u -d "tomorrow $stamp" +%s)
@@ -265,6 +267,7 @@ while :; do
   log "▶ $id — $title"
 
   attempt=0
+  rl_streak=0
   while (( attempt < MAX_ATTEMPTS )); do
     (( attempt++ ))
 
@@ -275,11 +278,11 @@ Your task is defined in: $task
 Read it. Do ONLY that task, completely. Verify with its gate: $gate
 Commit your work with a descriptive message.
 
-Append to PROGRESS.md: what you did, files touched, decisions, and anything the
+Append to .agent/PROGRESS.md: what you did, files touched, decisions, and anything the
 next agent needs. Write for someone with zero memory of this session.
 
 If you cannot proceed without a human decision, or the task requires anything on
-its NEVER list, write the blocker to PROGRESS.md and stop immediately. Do not
+its NEVER list, write the blocker to .agent/PROGRESS.md and stop immediately. Do not
 improvise around a blocker."
 
     run_to "$RUN_TIMEOUT" claude -p "$prompt" \
@@ -292,12 +295,19 @@ improvise around a blocker."
 
     if (( rc != 0 )) && is_rate_limited "$combined"; then
       log "usage limit hit"
-      if w=$(seconds_until_reset "$combined"); then :; else
-        w=$DEFAULT_BACKOFF; log "reset time unparseable → ${w}s backoff"; fi
+      if w=$(seconds_until_reset "$combined"); then
+        rl_streak=0
+      else
+        (( rl_streak++ ))
+        w=$(( DEFAULT_BACKOFF * (1 << (rl_streak > 1 ? rl_streak - 1 : 0)) ))
+        (( w > MAX_BACKOFF )) && w=$MAX_BACKOFF
+        log "reset time unparseable → backoff ${w}s (tentative $rl_streak — s'allonge tant que la limite persiste)"
+      fi
       sleep_until "$w"
       (( attempt-- ))          # a rate limit is not a failed attempt
       continue
     fi
+    rl_streak=0
 
     (( rc == 0 )) && record_cost
 

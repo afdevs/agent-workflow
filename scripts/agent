@@ -9,8 +9,8 @@
 
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-STATE="${STATE_DIR:-.autorun}"
-QDIR="${QUEUE_DIR:-queue}"
+STATE="${STATE_DIR:-.agent/run}"
+QDIR="${QUEUE_DIR:-.agent/queue}"
 
 c_ok=$'\033[32m'; c_warn=$'\033[33m'; c_err=$'\033[31m'; c_dim=$'\033[2m'; c_b=$'\033[1m'; c_0=$'\033[0m'
 
@@ -31,6 +31,21 @@ need_queue() {
 
 cmd_run() {
   need_queue
+  # En SSH sans tmux/screen : la déconnexion tuerait le run — prévenir avant.
+  # Ne JAMAIS poser de question sans TTY (nohup/setsid/tmux -d/agent) :
+  # un read sur stdin fermé recevrait EOF et tuerait le run au démarrage.
+  if [[ -n "${SSH_CONNECTION:-}" && -z "${TMUX:-}" && -z "${STY:-}" ]]; then
+    if [[ -t 0 ]]; then
+      echo "${c_warn}⚠  Tu es en SSH sans tmux : si la connexion tombe, le run meurt.${c_0}"
+      echo "   Recommandé :  ${c_b}tmux new -d -s run 'agent run'${c_0}   (détaché direct)"
+      echo "   ou :          ${c_b}tmux new -s run${c_0}  puis  ${c_b}agent run${c_0}  dedans."
+      printf "   Continuer sans tmux quand même ? [o/N] "
+      read -r rep
+      [[ "$rep" =~ ^[oOyY]$ ]] || exit 0
+    else
+      echo "${c_dim}(pas de TTY : lancement détaché supposé — suivi via agent status / tail -f run.log)${c_0}"
+    fi
+  fi
   echo "${c_dim}Ctrl-C pour arrêter. Suivre ailleurs :  agent status  /  agent logs${c_0}"
   exec "$HERE/autorun-queue.sh"
 }
@@ -58,6 +73,44 @@ cmd_retry() {
   echo "${c_ok}$id remise en attente.${c_0}"
   echo "Le travail raté est sur la branche ${c_b}parked/$id${c_0} si tu veux le voir."
   echo "→ Relance :  ${c_b}agent run${c_0}"
+}
+
+deps_unmet() { # deps_unmet <file> → liste les deps non faites
+  local deps d out=""
+  deps="$(fm "$1" deps)"
+  for d in ${deps//,/ }; do
+    d="${d// /}"; [[ -z "$d" || "$d" == "-" ]] && continue
+    [[ "$(status_of "$d")" == "done" ]] || out="$out $d"
+  done
+  echo "$out"
+}
+
+cmd_review() {
+  local id="${1:-}"
+  [[ -z "$id" ]] && { echo "usage: agent review <id>   (ex: agent review p2-050)"; exit 1; }
+  local f; f="$(task_file "$id")"
+  [[ -z "$f" ]] && { echo "${c_err}Tâche $id introuvable.${c_0}"; exit 1; }
+  local risk; risk="$(fm "$f" risk)"
+  [[ "$risk" == "owner" ]] && { echo "${c_warn}$id est ${c_b}owner${c_0}${c_warn} : c'est à TOI de la faire (la fiche contient les commandes) — pas à un agent, même supervisé.${c_0}"; exit 1; }
+  local missing; missing="$(deps_unmet "$f")"
+  [[ -n "$missing" ]] && { echo "${c_err}Dépendances non faites :${c_0}$missing"; echo "Termine-les d'abord (agent status)."; exit 1; }
+  [[ "$(status_of "$id")" == "done" ]] && { echo "$id est déjà validée."; exit 0; }
+
+  echo "${c_b}Session supervisée sur $id${c_0} — $(fm "$f" title)"
+  echo "${c_dim}Tu vas voir l'agent travailler et pouvoir intervenir. À la fin :${c_0}"
+  echo "${c_dim}  1. relis le diff (git diff)   2. lance le gate toi-même   3. agent done $id${c_0}"
+  echo
+  exec claude "Exécute la tâche décrite dans $f. Respecte strictement ses sections Rules, Steps et NEVER. C'est une tâche 'review' : fais le travail et commit, mais ne considère rien comme validé — un humain relira le diff. Termine en listant précisément les fichiers à relire."
+}
+
+cmd_done() {
+  local id="${1:-}"
+  [[ -z "$id" ]] && { echo "usage: agent done <id>"; exit 1; }
+  local f; f="$(task_file "$id")"
+  [[ -z "$f" ]] && { echo "${c_err}Tâche $id introuvable.${c_0}"; exit 1; }
+  mkdir -p "$STATE/state"
+  echo done > "$STATE/state/$id"
+  echo "${c_ok}$id validée.${c_0} Les tâches qui en dépendaient sont débloquées → ${c_b}agent status${c_0}"
 }
 
 cmd_status() {
@@ -99,13 +152,13 @@ cmd_status() {
       [[ -e "$sf" ]] || continue
       [[ "$(cat "$sf")" == "blocked" ]] || continue
       pid="$(basename "$sf")"
-      echo "      ${c_b}$pid${c_0} — $(grep -A1 "^## $pid" HUMAN-INBOX.md 2>/dev/null | grep -m1 'Reason:' | sed 's/.*Reason:\*\* *//')"
+      echo "      ${c_b}$pid${c_0} — $(grep -A1 "^## $pid" .agent/HUMAN-INBOX.md 2>/dev/null | grep -m1 'Reason:' | sed 's/.*Reason:\*\* *//')"
       echo "      ${c_dim}corrige la tâche puis :  agent retry $pid${c_0}"
     done
     acted=1
   fi
   if (( human > 0 )); then
-    echo "  ${c_warn}👤${c_0} $human tâche(s) te sont réservées (deploys, décisions) → ${c_b}HUMAN-INBOX.md${c_0}"
+    echo "  ${c_warn}👤${c_0} $human tâche(s) te sont réservées (deploys, décisions) → ${c_b}.agent/HUMAN-INBOX.md${c_0}"
     acted=1
   fi
   if (( pending == 0 && parked == 0 )); then
@@ -136,8 +189,8 @@ cmd_finish() {
   echo
 
   local human_left=0
-  [[ -f HUMAN-INBOX.md ]] && human_left=$(grep -c '^## ' HUMAN-INBOX.md 2>/dev/null || echo 0)
-  (( human_left > 0 )) && echo "  ${c_warn}⚠  $human_left entrée(s) dans HUMAN-INBOX.md — deploys/décisions à faire avant ou après le merge${c_0}"
+  [[ -f HUMAN-INBOX.md ]] && human_left=$(grep -c '^## ' .agent/HUMAN-INBOX.md 2>/dev/null || echo 0)
+  (( human_left > 0 )) && echo "  ${c_warn}⚠  $human_left entrée(s) dans .agent/HUMAN-INBOX.md — deploys/décisions à faire avant ou après le merge${c_0}"
 
   if (( fails )); then
     echo "  ${c_err}✘ Ne pas merger : corrige les échecs ci-dessus d'abord.${c_0}"; exit 1
@@ -158,6 +211,8 @@ case "${1:-status}" in
   status|"") cmd_status ;;
   logs) cmd_logs ;;
   retry) shift; cmd_retry "$@" ;;
+  review) shift; cmd_review "$@" ;;
+  done) shift; cmd_done "$@" ;;
   finish) cmd_finish ;;
-  *) echo "agent run | status | logs | retry <id> | finish"; exit 1 ;;
+  *) echo "agent run | status | logs | retry <id> | review <id> | done <id> | finish"; exit 1 ;;
 esac

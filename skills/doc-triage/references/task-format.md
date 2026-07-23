@@ -2,7 +2,7 @@
 
 One contract, two transports. The runner (`autorun-queue.sh` / `ralph.sh`)
 parses the frontmatter; the agent reads the body; the human reads
-PLAN-SUMMARY.md.
+.agent/PLAN-SUMMARY.md.
 
 ## Frontmatter contract (both modes)
 
@@ -45,7 +45,7 @@ E.g. ratchet: the error count may never rise; never trade it for `as any` /
 
 ## Done when
 Restate the gate in words + anything the gate can't check (the agent should
-self-verify these and record them in PROGRESS.md).
+self-verify these and record them in .agent/PROGRESS.md).
 
 ## NEVER
 The load-bearing list. Copy faithfully from the triage session; do not
@@ -57,7 +57,7 @@ soften. Standard floor for every task:
 Plus task-specific NEVERs from the grilling.
 
 If any step seems to require a NEVER item, the task is mis-specified:
-write the blocker to PROGRESS.md and stop. Do not improvise around it.
+write the blocker to .agent/PROGRESS.md and stop. Do not improvise around it.
 ```
 
 ## Mode selection — ask, never infer
@@ -73,8 +73,8 @@ issue body; the runner parses it from there.
 
 ## local
 
-Files: `queue/NNN-slug.md`, NNN in dependency-respecting order (gaps of 10 so
-insertions don't renumber). State lives in `.autorun/state/<id>`. Prefer when:
+Files: `.agent/queue/NNN-slug.md`, NNN in dependency-respecting order (gaps of 10 so
+insertions don't renumber). State lives in `.agent/run/state/<id>`. Prefer when:
 solo, no remote, experimentation, or the team tracker must stay clean.
 
 ## github
@@ -119,7 +119,7 @@ Prefer an issue mode when: >1 developer, a remote exists, or the user wants
 review threads and assignment. GitHub vs GitLab follows where the repo lives —
 check `git remote -v` before recommending.
 
-## PLAN-SUMMARY.md (always, both modes)
+## .agent/PLAN-SUMMARY.md (always, both modes)
 
 ```markdown
 # Plan summary — <doc> / <scope> — <date>

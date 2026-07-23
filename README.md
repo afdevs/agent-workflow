@@ -10,6 +10,8 @@ agent run          # lance la boucle
 agent status       # où j'en suis + quoi faire maintenant   ← EN CAS DE DOUTE : ÇA
 agent logs         # regarder l'agent travailler en direct
 agent retry <id>   # relancer une tâche en échec
+agent review <id>  # faire une tâche 'review' sous tes yeux (puis: agent done <id>)
+agent done <id>    # valider une tâche review/owner faite → débloque la suite
 agent finish       # vérifier + merger quand c'est fini
 ```
 
@@ -25,6 +27,26 @@ echo 'export PATH="$HOME/tools/agent-workflow/scripts:$PATH"' >> ~/.zshrc && sou
 # macOS : brew install coreutils jq
 ```
 
+## Un seul dossier : `.agent/`
+
+Tout le workflow vit dans `.agent/` à la racine du worktree — rien d'éparpillé :
+
+```
+.agent/
+├── queue/            # les tâches            → committé (reviewable en PR)
+├── PLAN-SUMMARY.md   # le plan à relire      → committé
+├── PROGRESS.md       # journal de la boucle  → committé
+├── HUMAN-INBOX.md    # échecs + tâches owner → committé
+└── run/              # état, logs, coûts     → jetable, à gitignorer :
+```
+
+```bash
+echo ".agent/run/" >> .gitignore
+```
+
+Seule exception : `CONTEXT.md` (glossaire du projet) reste à la racine — il
+appartient au projet, pas à un run, et survit aux branches.
+
 ## Utilisation
 
 ```bash
@@ -37,9 +59,9 @@ cd ../monprojet-agent
 claude
 > Trie la Phase 4 de docs/ROADMAP.md avec doc-triage pour la boucle autonome.
 #   → il t'interroge (~30 questions), c'est l'étape qui compte
-#   → il produit queue/ + PLAN-SUMMARY.md
+#   → il produit .agent/ (queue/ + PLAN-SUMMARY.md)
 
-# 3. Relire PLAN-SUMMARY.md (~10 min) — sections Gate debt et Doc drift
+# 3. Relire .agent/PLAN-SUMMARY.md (~10 min) — sections Gate debt et Doc drift
 
 # 4. Lancer, et aller dormir
 agent run
@@ -54,19 +76,32 @@ agent finish       # quand tout est vert
 | Situation | Quoi faire |
 |---|---|
 | Je ne sais pas où j'en suis | `agent status` |
-| Une tâche a échoué | `agent status` te donne la raison. Corrige le fichier de la tâche dans `queue/`, puis `agent retry <id>` |
+| Une tâche a échoué | `agent status` te donne la raison. Corrige le fichier de la tâche dans `.agent/queue/`, puis `agent retry <id>` |
 | Je veux voir ce qu'il fait | `agent logs` |
 | Rien ne s'affiche depuis 20 min | Normal : une tâche prend 10-30 min. `agent logs` pour vérifier qu'il bosse |
 | Il dort | Normal : limite d'usage atteinte, il reprend tout seul au reset |
+| `reset time unparseable` en boucle | Il ne connaît pas la vraie heure de reset (voir la dashboard claude.ai pour ça) : il réessaie avec une attente qui double à chaque échec (5→10→20→40 min…) et repart dès que ça passe |
 | Il s'est arrêté seul | 3 échecs de suite = panne systémique. `agent status`, corrige, `agent run` |
 | Le travail d'une tâche ratée | Préservé sur la branche `parked/<id>` |
+| tmux affiche `[exited]` aussitôt | Le shell du panneau est mort au démarrage — voir « tmux : `[exited]` » en annexe |
+| Lancer en fond et suivre à distance | `tmux new -d -s run 'agent run'` puis `agent status` / `tmux attach -t run` |
 | Une tâche ne doit PAS tourner | Passe `risk: auto` → `owner` dans **le fichier de la tâche** (pas dans PLAN-SUMMARY) |
+
+## Les tâches `review` et `owner`
+
+- **review** : l'agent PEUT faire le travail, TOI tu relis avant merge.
+  `agent review <id>` lance une session supervisée ; à la fin tu relis le
+  diff, tu lances le gate toi-même, puis `agent done <id>`.
+- **owner** : c'est à toi de la faire (la fiche de tâche contient les
+  commandes exactes). Quand c'est fait : `agent done <id>`.
+- `agent done` est ce qui débloque les tâches dépendantes — sans lui, la
+  boucle considère la tâche comme non faite.
 
 ## Ce que l'agent ne fera JAMAIS tout seul
 
 Deploys, suppressions de fichiers, réécriture d'historique git, migrations en
 prod, secrets. Ces tâches sont classées `owner` au triage et t'attendent dans
-`HUMAN-INBOX.md` — `agent status` te les compte.
+`.agent/HUMAN-INBOX.md` — `agent status` te les compte.
 
 ---
 
@@ -164,9 +199,15 @@ Un seul runner bash pour tous les OS — pas de double implémentation à mainte
 **Linux / serveur (recommandé pour les runs longs)** — tout est natif :
 
 ```bash
-tmux new -s agent
-QUEUE_MODE=local MODEL=sonnet BUDGET_TOTAL=15.00 \
-  ~/tools/agent-workflow/scripts/autorun-queue.sh
+# détaché direct (recommandé : marche même sans terminal interactif)
+tmux new-session -d -s run "agent run 2>&1 | tee run.log"
+tmux ls                     # la session tourne ?
+agent status                # où ça en est
+tmux attach -t run          # entrer voir (Ctrl-b d pour ressortir)
+
+# sans tmux (équivalent) :
+nohup agent run > run.log 2>&1 &
+tail -f run.log
 ```
 
 **macOS** — le runner se relance tout seul sous `caffeinate` (le Mac ne dort
@@ -204,7 +245,7 @@ le run (Paramètres → Alimentation).
 ## Conventions équipe
 
 - Boucle sur **worktree + branche dédiée**, jamais sur `main`.
-- Journal de la boucle = `PROGRESS.md` (par branche). Au merge, reverser dans
+- Journal de la boucle = `.agent/PROGRESS.md` (par branche). Au merge, reverser dans
   le journal du projet selon sa convention.
 - Les fichiers de gouvernance du projet (journal, kanban, `CLAUDE.md`, version
   du `package.json`…) sont dans le NEVER de chaque tâche — à adapter par
@@ -214,6 +255,47 @@ le run (Paramètres → Alimentation).
 - Le choix du mode appartient à celui qui triage : mode local tant que
   l'équipe du projet n'est pas onboardée (pas de pollution du tracker), mode
   issues (github/gitlab selon le remote) dès qu'elle l'est.
+
+## tmux : `[exited]` immédiat au lancement
+
+`[exited]` = le process du panneau est mort instantanément, tmux détruit la
+session et rend la main. La session a existé, rien n'a tourné dedans.
+
+Cause n°1 en contexte d'automatisation : **pas de vrai TTY**. Si la commande
+tourne sans pseudo-terminal, le shell lit un EOF immédiat sur stdin et sort.
+Diagnostic en une commande : `tty` → si `not a tty`, c'est ça.
+(`agent run` gère ce cas : sans TTY il suppose un lancement détaché et ne pose
+aucune question interactive.)
+
+Autres suspects, dans l'ordre :
+
+- `echo $TMUX` non vide → tu es déjà DANS tmux (nesting).
+- `~/.tmux.conf` → un `default-command` cassé (ou `remain-on-exit on` qui
+  masque la vraie erreur).
+- rc shell cassé : `tmux new -s test '/bin/bash --noprofile --norc'` — si ça
+  tient, le coupable est ton `.bashrc`/`.profile` (un `exit` ou une commande
+  qui échoue au démarrage).
+
+La parade qui évite tout ça : **ne pas dépendre de l'attache interactive**.
+
+```bash
+tmux new-session -d -s run "agent run 2>&1 | tee run.log"
+tmux capture-pane -pt run    # jeter un œil sans s'attacher
+tmux attach -t run           # uniquement depuis un vrai terminal
+```
+
+Et si tu pilotes depuis un agent (aucun terminal humain), tmux n'est pas le
+bon outil — lance directement détaché :
+
+```bash
+setsid bash -c 'agent run' > run.log 2>&1 < /dev/null &
+# ou
+nohup agent run > run.log 2>&1 &
+```
+
+puis `tail -f run.log` ou `agent status` pour suivre. Dans tous les cas, les
+tâches réservées de `.agent/HUMAN-INBOX.md` restent en attente de toi — un run
+détaché ne les touchera jamais.
 
 ## Crédits & lectures
 

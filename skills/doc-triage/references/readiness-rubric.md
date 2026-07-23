@@ -23,7 +23,7 @@ Score each item of the document individually on five axes. The document's
 - **C**: The metric starts dirty (pre-existing failures) → ratchet: the count
   may never rise; tightens as it falls.
 - **D**: No verification exists and none can be scripted (visual/judgment
-  outcomes). → `review` at best; flag in PLAN-SUMMARY.md.
+  outcomes). → `review` at best; flag in .agent/PLAN-SUMMARY.md.
 
 ### 3. Reversibility — what does a bad run cost?
 - **A**: Fully contained in a branch; `git branch -D` undoes everything.
@@ -36,7 +36,7 @@ Score each item of the document individually on five axes. The document's
 ### 4. Groundedness — does the doc match the repo?
 - **A**: Spot-checks pass (paths exist, scripts exist, counts roughly hold).
 - **B**: Minor drift (counts off, files moved) → correct in the task body,
-  note in PLAN-SUMMARY.md.
+  note in .agent/PLAN-SUMMARY.md.
 - **C**: The item references things that don't exist → grill or drop; never
   emit a task against phantom state.
 
@@ -56,7 +56,7 @@ Score each item of the document individually on five axes. The document's
 | Atomicity B/D, rest fine | Split during Phase 3; confirm boundaries in grilling |
 | Atomicity C | Emit one `recon` task; re-triage after it runs |
 | Verifiability B/C | Prescribe stricter gate / ratchet; confirm with user |
-| Verifiability D | Cap at `review`; say why in PLAN-SUMMARY.md |
+| Verifiability D | Cap at `review`; say why in .agent/PLAN-SUMMARY.md |
 | Reversibility D | `owner`. Grilling cannot change this. |
 | Groundedness B/C | Verify against repo; correct or drop |
 | Decision C | Grill until answered; do not emit before |
@@ -75,4 +75,4 @@ Start from `auto` and demote on the first match:
 8. Otherwise, with an honest gate → **auto**
 
 Rules 1–3 are absolute. Rules 4–7 may be relaxed ONLY by the user explicitly,
-during grilling, per-task — record the relaxation in PLAN-SUMMARY.md.
+during grilling, per-task — record the relaxation in .agent/PLAN-SUMMARY.md.
