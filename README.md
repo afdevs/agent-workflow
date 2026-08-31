@@ -228,10 +228,14 @@ Sans coreutils, le runner fonctionne en mode dégradé (annoncé au démarrage) 
 attente forfaitaire de 5 min au lieu de l'heure exacte de reset, pas de kill
 des agents bloqués. Sans jq : suivi des coûts désactivé (mode local seulement).
 
-**Choisir le compte Claude** — par défaut la boucle utilise le profil Claude Code
-du shell qui la lance, donc le profil par défaut si aucun `CLAUDE_CONFIG_DIR`
-n'est exporté (un alias interactif du type `alias claude-work='CLAUDE_CONFIG_DIR=… claude'`
-ne s'applique **pas** au runner). Pour l'épingler sur un compte précis :
+**Choisir le compte Claude** — par défaut la boucle utilise le **profil par
+défaut de Claude Code**, quel que soit le `CLAUDE_CONFIG_DIR` du shell qui la
+lance : un run non surveillé doit dépendre de sa config, pas du terminal d'où on
+l'a démarré (et ce terminal est souvent lui-même une session Claude Code, qui
+exporte son propre profil). Un `CLAUDE_CONFIG_DIR` hérité est donc ignoré, avec
+un avertissement dans le log.
+
+Pour épingler un autre profil, une seule variable :
 
 ```bash
 AGENT_CLAUDE_CONFIG_DIR=$HOME/.claude-work agent run
