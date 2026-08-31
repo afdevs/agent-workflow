@@ -42,6 +42,35 @@ RESET_BUFFER="${RESET_BUFFER:-90}"
 ALLOWED_TOOLS="${ALLOWED_TOOLS:-Read,Write,Edit,Glob,Grep,Bash}"
 DISALLOWED_TOOLS="${DISALLOWED_TOOLS:-Bash(git push:*),Bash(git filter-repo:*),Bash(git reset:*),Bash(git rebase:*),Bash(rm:*),Bash(git rm:*),Bash(supabase:*),WebFetch}"
 
+# Profil Claude Code utilisé par la boucle. Par défaut : le profil par défaut de
+# Claude Code, quel que soit le CLAUDE_CONFIG_DIR exporté par le shell appelant —
+# une boucle non surveillée doit dépendre de sa config, pas du terminal qui la
+# lance. AGENT_CLAUDE_CONFIG_DIR permet d'en choisir explicitement un autre
+# (ex. ~/.claude-work) : c'est le seul moyen d'épingler le compte dont le quota
+# sera dépensé, et donc la dashboard à surveiller.
+AGENT_CLAUDE_CONFIG_DIR="${AGENT_CLAUDE_CONFIG_DIR:-}"
+PROFILE_NOTE=""
+if [[ -n "$AGENT_CLAUDE_CONFIG_DIR" ]]; then
+  [[ -d "$AGENT_CLAUDE_CONFIG_DIR" ]] || {
+    echo "AGENT_CLAUDE_CONFIG_DIR introuvable: $AGENT_CLAUDE_CONFIG_DIR" >&2; exit 1; }
+  export CLAUDE_CONFIG_DIR="$AGENT_CLAUDE_CONFIG_DIR"
+else
+  # Ne pas hériter en silence : le shell qui lance la boucle est souvent une
+  # session Claude Code, qui exporte son propre CLAUDE_CONFIG_DIR.
+  [[ -n "${CLAUDE_CONFIG_DIR:-}" ]] && PROFILE_NOTE="⚠ CLAUDE_CONFIG_DIR=$CLAUDE_CONFIG_DIR hérité du shell — ignoré, profil par défaut utilisé (AGENT_CLAUDE_CONFIG_DIR pour l'épingler)"
+  unset CLAUDE_CONFIG_DIR
+fi
+
+claude_account() { # -> "email (org)" | "unknown"
+  local j mail org
+  j="${CLAUDE_CONFIG_DIR:+$CLAUDE_CONFIG_DIR/}"; j="${j:-$HOME/}.claude.json"
+  [[ -r "$j" ]] || { echo unknown; return; }
+  # .claude.json est pretty-printed : tolérer les espaces autour du ':'
+  mail=$(grep -oE '"emailAddress"[[:space:]]*:[[:space:]]*"[^"]*"'     "$j" | head -n1 | cut -d'"' -f4)
+  org=$( grep -oE '"organizationName"[[:space:]]*:[[:space:]]*"[^"]*"' "$j" | head -n1 | cut -d'"' -f4)
+  echo "${mail:-unknown}${org:+ ($org)}"
+}
+
 LOG="$STATE_DIR/queue.log"
 COST_FILE="$STATE_DIR/cost_usd"
 OUT_JSON="$STATE_DIR/last.json"
@@ -241,7 +270,8 @@ PY
 }
 
 # ---------------------------------------------------------------- main loop ----
-log "=== queue start | mode=$QUEUE_MODE | model=$MODEL ==="
+log "=== queue start | mode=$QUEUE_MODE | model=$MODEL | profile=${CLAUDE_CONFIG_DIR:-default} | account=$(claude_account) ==="
+[[ -n "$PROFILE_NOTE" ]] && log "$PROFILE_NOTE"
 
 # Park the non-auto tasks into the inbox once, up front (local mode only;
 # issue modes fetch only agent-auto by label).

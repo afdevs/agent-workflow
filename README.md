@@ -79,7 +79,7 @@ agent finish       # quand tout est vert
 | Une tâche a échoué | `agent status` te donne la raison. Corrige le fichier de la tâche dans `.agent/queue/`, puis `agent retry <id>` |
 | Je veux voir ce qu'il fait | `agent logs` |
 | Rien ne s'affiche depuis 20 min | Normal : une tâche prend 10-30 min. `agent logs` pour vérifier qu'il bosse |
-| Il dort | Normal : limite d'usage atteinte, il reprend tout seul au reset |
+| Il dort | Normal : limite d'usage atteinte, il reprend tout seul au reset. La ligne `queue start` de `queue.log` dit quel compte est dépensé — c'est ce compte-là qu'il faut regarder, pas forcément celui de la dashboard ouverte |
 | `reset time unparseable` en boucle | Il ne connaît pas la vraie heure de reset (voir la dashboard claude.ai pour ça) : il réessaie avec une attente qui double à chaque échec (5→10→20→40 min…) et repart dès que ça passe |
 | Il s'est arrêté seul | 3 échecs de suite = panne systémique. `agent status`, corrige, `agent run` |
 | Le travail d'une tâche ratée | Préservé sur la branche `parked/<id>` |
@@ -227,6 +227,30 @@ tail -f .autorun/queue.log
 Sans coreutils, le runner fonctionne en mode dégradé (annoncé au démarrage) :
 attente forfaitaire de 5 min au lieu de l'heure exacte de reset, pas de kill
 des agents bloqués. Sans jq : suivi des coûts désactivé (mode local seulement).
+
+**Choisir le compte Claude** — par défaut la boucle utilise le **profil par
+défaut de Claude Code**, quel que soit le `CLAUDE_CONFIG_DIR` du shell qui la
+lance : un run non surveillé doit dépendre de sa config, pas du terminal d'où on
+l'a démarré (et ce terminal est souvent lui-même une session Claude Code, qui
+exporte son propre profil). Un `CLAUDE_CONFIG_DIR` hérité est donc ignoré, avec
+un avertissement dans le log.
+
+Pour épingler un autre profil, une seule variable :
+
+```bash
+AGENT_CLAUDE_CONFIG_DIR=$HOME/.claude-work agent run
+```
+
+Le compte réellement utilisé est écrit dans la ligne `queue start` de
+`.agent/run/queue.log` :
+
+```
+=== queue start | mode=local | model=sonnet | profile=/Users/moi/.claude-work | account=moi@boite.com (Boite) ===
+```
+
+À vérifier en premier quand un `usage limit hit` ne correspond pas à la
+dashboard que vous regardez : les quotas sont par compte, et un runner sur le
+mauvais profil dort sur une limite qui n'est pas celle que vous surveillez.
 
 **Windows** — via Git Bash (déjà requis par Claude Code sur Windows) :
 
