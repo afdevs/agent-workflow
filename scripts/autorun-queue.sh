@@ -285,6 +285,16 @@ log "=== queue start | mode=$QUEUE_MODE | model=$MODEL | profile=${CLAUDE_CONFIG
     "$id" "$(fm "$f" title)" "$r" "$f" >> "$INBOX"
 done
 
+# Un état non reconnu (écrit à la main, typo…) rend la tâche invisible pour
+# next_task tout en comptant comme « prête » dans `agent status` : le signaler.
+for sf in "$STATE_DIR"/state/*; do
+  [[ -e "$sf" ]] || continue
+  case "$(cat "$sf")" in
+    pending|running|done|blocked|needs-human) ;;
+    *) log "⚠ état inconnu '$(cat "$sf")' pour $(basename "$sf") — tâche ignorée ; corrige $sf" ;;
+  esac
+done
+
 consec_fails=0
 while :; do
   (( consec_fails >= CONSEC_FAIL_LIMIT )) && { log "STOP: $consec_fails consecutive failures — likely systemic; fix and rerun"; break; }
@@ -368,7 +378,8 @@ improvise around a blocker."
 done
 
 log "=== finished | spend \$$(cat "$COST_FILE") ==="
-printf 'done: %s | blocked: %s | needs-human: %s\n' \
+printf 'done: %s | blocked: %s | needs-human: %s | autres: %s\n' \
   "$(grep -lx done "$STATE_DIR"/state/* 2>/dev/null | wc -l)" \
   "$(grep -lx blocked "$STATE_DIR"/state/* 2>/dev/null | wc -l)" \
-  "$(grep -lx needs-human "$STATE_DIR"/state/* 2>/dev/null | wc -l)" | tee -a "$LOG"
+  "$(grep -lx needs-human "$STATE_DIR"/state/* 2>/dev/null | wc -l)" \
+  "$(grep -LxE 'pending|running|done|blocked|needs-human' "$STATE_DIR"/state/* 2>/dev/null | wc -l)" | tee -a "$LOG"
